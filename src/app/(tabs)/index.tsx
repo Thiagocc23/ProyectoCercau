@@ -1,19 +1,21 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { ScrollView, StyleSheet, useWindowDimensions, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { BusinessCard } from '@/components/business-card';
 import { EnlaceCuenta, MensajeError } from '@/components/autenticacion/controles';
+import { BusinessCard } from '@/components/business-card';
 import { EncabezadoBuscar, EncabezadoComercios } from '@/components/encabezado-buscar';
-import { LogoCercau } from '@/components/logo-cercau';
 import { CategoryChip, EstadoInterfaz, SearchField } from '@/components/interfaz';
+import { LogoCercau } from '@/components/logo-cercau';
+import { SeccionResenas } from '@/components/resenas/seccion-resenas';
 import { ThemedText } from '@/components/themed-text';
 import { useAutenticacion } from '@/contextos/autenticacion';
 import { useConsulta } from '@/hooks/use-consulta';
 import { useFavoritos } from '@/hooks/use-favoritos';
+import { useTheme } from '@/hooks/use-theme';
+import { inicializarBaseDeDatos } from '@/servicios/base-datos';
 import { buscarComercios, obtenerCategorias } from '@/servicios/comercios';
 import type { CategoriaBusqueda } from '@/tipos/comercio';
-import { useTheme } from '@/hooks/use-theme';
 
 const categoryIcons = {
   Todos: { ios: 'bag', android: 'shopping_bag', web: 'shopping_bag' },
@@ -36,13 +38,17 @@ export default function SearchScreen() {
   const { favoritos: favoriteIds, alternar, cargando, error, reintentar } = useFavoritos();
   const visibleBusinesses = comercios.datos ?? [];
 
+  // Inicializa la base de datos de reseñas offline
+  useEffect(() => {
+    inicializarBaseDeDatos();
+  }, []);
+
   function clearFilters() {
     setQuery('');
     setSelectedCategory('Todos');
   }
 
   return (
-    // El borde superior se protege explícitamente; NativeTabs conserva su ajuste inferior.
     <SafeAreaView
       edges={['top', 'left', 'right']}
       style={[styles.screen, { backgroundColor: theme.background }]}>
@@ -71,7 +77,16 @@ export default function SearchScreen() {
             contentInsetAdjustmentBehavior="never"
             keyboardShouldPersistTaps="handled"
             contentContainerStyle={styles.categories}>
-            {(categorias.datos ?? []).map((category) => <CategoryChip key={category} ancho={categoryWidth} titulo={category} icono={categoryIcons[category]} seleccionado={category === selectedCategory} onPress={() => setSelectedCategory(category)} />)}
+            {(categorias.datos ?? []).map((category) => (
+              <CategoryChip
+                key={category}
+                ancho={categoryWidth}
+                titulo={category}
+                icono={categoryIcons[category]}
+                seleccionado={category === selectedCategory}
+                onPress={() => setSelectedCategory(category)}
+              />
+            ))}
           </ScrollView>
         </View>
 
@@ -82,23 +97,35 @@ export default function SearchScreen() {
           <EncabezadoComercios cantidad={visibleBusinesses.length} onVerTodos={clearFilters} />
           {comercios.cargando && <EstadoInterfaz tipo="cargando" titulo="Cargando comercios…" />}
           {comercios.error && <EstadoInterfaz tipo="error" titulo="No pudimos cargar los comercios" descripcion={comercios.error} accion="Reintentar" onPress={comercios.reintentar} />}
-          {visibleBusinesses.length > 0 && <ScrollView horizontal showsHorizontalScrollIndicator={false} contentInsetAdjustmentBehavior="never"
-            keyboardShouldPersistTaps="handled" contentContainerStyle={styles.businessList}>
-            {visibleBusinesses.map((business) => (
-              <View key={business.id} style={{ width: cardWidth }}>
-                <BusinessCard
-                  business={business}
-                  isFavorite={favoriteIds.includes(business.id)}
-                  onToggleFavorite={() => void alternar(business.id)}
-                  deshabilitado={cargando}
-                />
-              </View>
-            ))}
-          </ScrollView>}
+          {visibleBusinesses.length > 0 && (
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentInsetAdjustmentBehavior="never"
+              keyboardShouldPersistTaps="handled"
+              contentContainerStyle={styles.businessList}>
+              {visibleBusinesses.map((business) => (
+                <View key={business.id} style={{ width: cardWidth }}>
+                  <BusinessCard
+                    business={business}
+                    isFavorite={favoriteIds.includes(business.id)}
+                    onToggleFavorite={() => void alternar(business.id)}
+                    deshabilitado={cargando}
+                  />
+                </View>
+              ))}
+            </ScrollView>
+          )}
           {!comercios.cargando && !comercios.error && visibleBusinesses.length === 0 && (
             <EstadoInterfaz titulo="No encontramos comercios" descripcion="Probá con otro nombre o elegí otra categoría." accion="Limpiar filtros" onPress={clearFilters} />
           )}
         </View>
+
+        {/* AQUÍ QUEDAN TUS RESEÑAS DE PRUEBA */}
+        <View style={styles.reviewsSection}>
+          <SeccionResenas comercioId="1" />
+        </View>
+
       </ScrollView>
     </SafeAreaView>
   );
@@ -131,4 +158,5 @@ const styles = StyleSheet.create({
   categories: { gap: 8, paddingRight: 4 },
   resultsSection: { gap: 10 },
   businessList: { gap: 10, paddingBottom: 4, alignItems: 'stretch' },
+  reviewsSection: { marginTop: 12 },
 });
