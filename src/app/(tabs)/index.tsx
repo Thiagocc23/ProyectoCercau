@@ -120,17 +120,14 @@ export default function SearchScreen() {
             <EstadoInterfaz titulo="No encontramos comercios" descripcion="Probá con otro nombre o elegí otra categoría." accion="Limpiar filtros" onPress={clearFilters} />
           )}
         </View>
-
-        {/* AQUÍ QUEDAN TUS RESEÑAS DE PRUEBA */}
-        <View style={styles.reviewsSection}>
-          <SeccionResenas comercioId="1" />
-        </View>
-
-      </ScrollView>
-    </SafeAreaView>
+      {/* PRUEBA DE CONEXIÓN CON LA API REAL */}
+      <View style={styles.reviewsSection}>
+        <SeccionResenas comercioId="com-118" />
+      </View>
+    </ScrollView>
+  </SafeAreaView>
   );
 }
-
 const styles = StyleSheet.create({
   screen: { flex: 1 },
   content: {

@@ -58,6 +58,12 @@
           "faceIDPermission": "Cercau usa Face ID para verificar tu identidad cuando elegís ingresar con biometría."
         }
       ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Cercau necesita acceso a tus fotos para adjuntar imágenes a las reseñas y a la ficha del comercio."
+        }
+      ],
       "expo-video"
     ],
     "experiments": {
