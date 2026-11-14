@@ -8,6 +8,7 @@ import { EncabezadoBuscar, EncabezadoComercios } from '@/components/encabezado-b
 import { CategoryChip, EstadoInterfaz, SearchField } from '@/components/interfaz';
 import { LogoCercau } from '@/components/logo-cercau';
 import { SeccionResenas } from '@/components/resenas/seccion-resenas';
+
 import { ThemedText } from '@/components/themed-text';
 import { useAutenticacion } from '@/contextos/autenticacion';
 import { useConsulta } from '@/hooks/use-consulta';
@@ -120,10 +121,13 @@ export default function SearchScreen() {
             <EstadoInterfaz titulo="No encontramos comercios" descripcion="Probá con otro nombre o elegí otra categoría." accion="Limpiar filtros" onPress={clearFilters} />
           )}
         </View>
-      {/* PRUEBA DE CONEXIÓN CON LA API REAL */}
-      <View style={styles.reviewsSection}>
-        <SeccionResenas comercioId="com-118" />
-      </View>
+
+
+        {/* PRUEBA DE CONEXIÓN CON LA API REAL */}
+<View style={styles.reviewsSection}>
+  <SeccionResenas comercioId="com-118" />
+</View>
+
     </ScrollView>
   </SafeAreaView>
   );
@@ -156,4 +160,6 @@ const styles = StyleSheet.create({
   resultsSection: { gap: 10 },
   businessList: { gap: 10, paddingBottom: 4, alignItems: 'stretch' },
   reviewsSection: { marginTop: 12 },
+
+
 });

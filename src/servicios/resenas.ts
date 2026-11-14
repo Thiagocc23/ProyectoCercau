@@ -1,7 +1,15 @@
 import { ResenaCuenta } from '../tipos/actividad';
 import { DatosEditarResena, DatosNuevaResena, Resena } from '../tipos/resena';
 import { conectarConsultaResenas } from './actividad';
-import { listarResenasApi, type ResenaApi } from './api-resenas';
+import {
+  crearResenaApi,
+  editarResenaApi,
+  eliminarResenaApi,
+  listarResenasApi,
+  reportarResenaApi,
+  responderResenaApi,
+  type ResenaApi
+} from './api-resenas';
 import {
   actualizarResenaPendientePorClientId,
   eliminarResenaPendientePorClientId,
@@ -12,6 +20,7 @@ import {
   obtenerResenasLocales,
   obtenerResenasSincronizadasDB
 } from './base-datos';
+import { combinarRespuestasDemoLocales } from './respuestas-demo';
 
 // Convierte el formato de reseña del servidor al que usa la interfaz del Rol 4.
 function convertirResenaApi(resena: ResenaApi): Resena {
@@ -30,14 +39,35 @@ function convertirResenaApi(resena: ResenaApi): Resena {
       ? { comentario: resena.respuesta, fechaCreacion: '' }
       : undefined,
     reportada: resena.reportada,
-    pendienteSincronizacion: !resena.sincronizada,
+    pendienteSincronizacion: false,
   };
 }
 
-const DEMORA_SIMULADA_MS = 600;
+/** El token pertenece al Rol 1; el Rol 4 nunca lo genera ni lo guarda. */
+export interface SesionResenas {
+  token: string;
+  usuarioId: string;
+}
 
-const esperarRedSimulada = () =>
-  new Promise<void>((resolve) => setTimeout(resolve, DEMORA_SIMULADA_MS));
+function exigirSesion(token?: string): string {
+  if (!token?.trim()) {
+    throw new Error('Esta operación requiere iniciar sesión con la autenticación real del Rol 1.');
+  }
+  return token.trim();
+}
+
+function validarCalificacion(calificacion: number): void {
+  if (!Number.isInteger(calificacion) || calificacion < 1 || calificacion > 5) {
+    throw new Error('La calificación debe ser un número entero entre 1 y 5 estrellas.');
+  }
+}
+
+function validarFotosApi(fotos: string[]): void {
+  if (fotos.length > 0) {
+    throw new Error('La API actual no admite fotografías en reseñas. No se enviaron ni descartaron las fotos.');
+  }
+}
+
 
 function ordenarPorFechaDescendente(lista: Resena[]): Resena[] {
   return [...lista].sort((a, b) => {
@@ -50,6 +80,7 @@ function ordenarPorFechaDescendente(lista: Resena[]): Resena[] {
 // Catálogo de videos de presentación asociados por comercioId
 export const VIDEOS_COMERCIO_CATALOGO: Record<string, string> = {
   '1': 'https://assets.mixkit.co/videos/4385/4385-720.mp4',
+  'com-118': 'https://assets.mixkit.co/videos/4385/4385-720.mp4',
   'cafe-la-esquina': 'https://assets.mixkit.co/videos/4385/4385-720.mp4',
   'panaderia-la-esquina': 'https://assets.mixkit.co/videos/4291/4291-720.mp4',
   'panaderia-el-sol': 'https://assets.mixkit.co/videos/4291/4291-720.mp4',
@@ -74,7 +105,10 @@ export const obtenerVideoComercioServicio = (
 };
 
 // Consultamos primero la API y guardamos una copia local como respaldo.
-export const obtenerResenasPorComercio = async (comercioId: string): Promise<Resena[]> => {
+export const obtenerResenasPorComercio = async (
+  comercioId: string,
+  incluirRespuestasDemo = false
+): Promise<Resena[]> => {
   console.log('ROL 4 - Comercio consultado:', comercioId);
   inicializarBaseDeDatos();
   const pendientes = obtenerResenasLocales(comercioId);
@@ -92,10 +126,13 @@ export const obtenerResenasPorComercio = async (comercioId: string): Promise<Res
       (resena) => !idsServidor.has(resena.id)
     );
 
-    return ordenarPorFechaDescendente([
+    const ordenadas = ordenarPorFechaDescendente([
       ...resenasConvertidas,
       ...pendientesSinDuplicar,
     ]);
+    return incluirRespuestasDemo
+      ? combinarRespuestasDemoLocales(comercioId, ordenadas)
+      : ordenadas;
   } catch (error) {
     console.warn('No se pudieron consultar las reseñas de la API:', error);
 
@@ -105,10 +142,13 @@ export const obtenerResenasPorComercio = async (comercioId: string): Promise<Res
       (resena) => !idsGuardados.has(resena.id)
     );
 
-    return ordenarPorFechaDescendente([
+    const ordenadas = ordenarPorFechaDescendente([
       ...pendientesSinDuplicar,
       ...guardadas,
     ]);
+    return incluirRespuestasDemo
+      ? combinarRespuestasDemoLocales(comercioId, ordenadas)
+      : ordenadas;
   }
 };
 
@@ -121,78 +161,57 @@ export const calcularEstadisticasResenas = (resenas: Resena[]) => {
   return { promedio, total: resenas.length };
 };
 
+/** Crea en Docker si hay token, o guarda una reseña pendiente en SQLite. */
 export const crearResena = async (
-  datos: DatosNuevaResena
+  datos: DatosNuevaResena,
+  token?: string
 ): Promise<Resena> => {
-  if (datos.calificacion < 1 || datos.calificacion > 5) {
-    throw new Error(
-      'La calificación debe estar entre 1 y 5 estrellas.'
+  validarCalificacion(datos.calificacion);
+  inicializarBaseDeDatos();
+  if (!token) {
+    return guardarResenaPendiente(
+      datos.calificacion, datos.comentario.trim(), datos.fotos ?? [],
+      datos.comercioId, datos.usuarioId, datos.nombreUsuario.trim() || 'Vecino'
     );
   }
 
-  inicializarBaseDeDatos();
-
-  // Mientras no esté integrada la autenticación real,
-  // conservamos la reseña en la cola offline.
-  // No la marcamos como sincronizada con Docker.
-  return guardarResenaPendiente(
-    datos.calificacion,
-    datos.comentario.trim(),
-    datos.fotos ?? [],
-    datos.comercioId,
-    datos.usuarioId,
-    datos.nombreUsuario.trim() || 'Vecino'
-  );
+  validarFotosApi(datos.fotos ?? []);
+  const creada = await crearResenaApi(datos.comercioId, {
+    estrellas: datos.calificacion,
+    comentario: datos.comentario.trim(),
+  }, exigirSesion(token));
+  const resena = convertirResenaApi(creada);
+  return guardarResenaSincronizadaDB({ ...resena, nombreUsuario: datos.nombreUsuario });
 };
-
-
-
-
-
 
 export const crearResenaOffline = async (datos: DatosNuevaResena): Promise<Resena> => {
-  if (datos.calificacion < 1 || datos.calificacion > 5) {
-    throw new Error('La calificación debe estar entre 1 y 5 estrellas.');
-  }
-
+  validarCalificacion(datos.calificacion);
   inicializarBaseDeDatos();
-
   return guardarResenaPendiente(
-    datos.calificacion,
-    datos.comentario.trim(),
-    datos.fotos ?? [],
-    datos.comercioId,
-    datos.usuarioId,
-    datos.nombreUsuario.trim() || 'Vecino'
+    datos.calificacion, datos.comentario.trim(), datos.fotos ?? [],
+    datos.comercioId, datos.usuarioId, datos.nombreUsuario.trim() || 'Vecino'
   );
 };
 
+/** Sólo las reseñas pendientes se editan localmente; las publicadas requieren API. */
 export const editarResena = async (
   datos: DatosEditarResena,
-  online = true
+  online = true,
+  token?: string
 ): Promise<Resena> => {
-  if (datos.calificacion < 1 || datos.calificacion > 5) {
-    throw new Error('La calificación debe estar entre 1 y 5 estrellas.');
-  }
-
+  validarCalificacion(datos.calificacion);
   inicializarBaseDeDatos();
-
-  // 1. Verificar si es una reseña pendiente en la cola offline
-  const pendientes = obtenerResenasLocales();
-  const pendienteExistente = pendientes.find((p) => p.id === datos.id);
-
-  if (pendienteExistente) {
-    if (pendienteExistente.usuarioId !== datos.usuarioId) {
+  const pendiente = obtenerResenasLocales().find((r) => r.id === datos.id);
+  if (pendiente) {
+    if (pendiente.usuarioId !== datos.usuarioId) {
       throw new Error('Solo podés editar tus propias reseñas.');
     }
-    actualizarResenaPendientePorClientId(
-      datos.id,
-      datos.calificacion,
-      datos.comentario.trim(),
-      datos.fotos
+    const actualizada = actualizarResenaPendientePorClientId(
+      datos.id, datos.calificacion, datos.comentario.trim(), datos.fotos
     );
+    if (!actualizada) throw new Error('No se pudo actualizar la reseña pendiente.');
     return {
-      ...pendienteExistente,
+      ...pendiente,
       calificacion: datos.calificacion,
       comentario: datos.comentario.trim(),
       fotos: datos.fotos,
@@ -200,41 +219,31 @@ export const editarResena = async (
     };
   }
 
-  // 2. Si es una reseña sincronizada, validamos propiedad y actualizamos en SQLite
-  if (online) {
-    await esperarRedSimulada();
-  }
-
-  const sincronizadas = obtenerResenasSincronizadasDB();
-  const existente = sincronizadas.find((r) => r.id === datos.id);
-
-  if (!existente) {
-    throw new Error('No se encontró la reseña que intentás editar.');
-  }
-
-  if (existente.usuarioId !== datos.usuarioId) {
+  if (!online) throw new Error('Para editar una reseña publicada necesitás conexión a Internet.');
+  const tokenValido = exigirSesion(token);
+  const existente = obtenerResenasSincronizadasDB().find((r) => r.id === datos.id);
+  if (existente && existente.usuarioId !== datos.usuarioId) {
     throw new Error('Solo podés editar tus propias reseñas.');
   }
-
-  const actualizada: Resena = {
-    ...existente,
-    calificacion: datos.calificacion,
+  validarFotosApi(datos.fotos);
+  const modificada = await editarResenaApi(datos.id, {
+    estrellas: datos.calificacion,
     comentario: datos.comentario.trim(),
-    fotos: datos.fotos,
-  };
-
-  return guardarResenaSincronizadaDB(actualizada);
+  }, tokenValido);
+  return guardarResenaSincronizadaDB({
+    ...convertirResenaApi(modificada),
+    nombreUsuario: existente?.nombreUsuario ?? 'Vecino',
+    fotos: existente?.fotos ?? [],
+  });
 };
 
 export const eliminarResenaServicio = async (
   id: string,
-  usuarioId: string
+  usuarioId: string,
+  token?: string
 ): Promise<void> => {
   inicializarBaseDeDatos();
-
-  // Si estaba en la cola de pendientes offline
-  const pendientes = obtenerResenasLocales();
-  const pendiente = pendientes.find((p) => p.id === id);
+  const pendiente = obtenerResenasLocales().find((r) => r.id === id);
   if (pendiente) {
     if (pendiente.usuarioId !== usuarioId) {
       throw new Error('Solo podés eliminar tus propias reseñas.');
@@ -242,119 +251,88 @@ export const eliminarResenaServicio = async (
     eliminarResenaPendientePorClientId(id);
     return;
   }
-
-  await esperarRedSimulada();
-
-  const sincronizadas = obtenerResenasSincronizadasDB();
-  const existente = sincronizadas.find((r) => r.id === id);
-
-  if (!existente) {
-    throw new Error('La reseña ya no existe.');
-  }
-
-  if (existente.usuarioId !== usuarioId) {
+  const tokenValido = exigirSesion(token);
+  const existente = obtenerResenasSincronizadasDB().find((r) => r.id === id);
+  if (existente && existente.usuarioId !== usuarioId) {
     throw new Error('Solo podés eliminar tus propias reseñas.');
   }
-
+  await eliminarResenaApi(id, tokenValido);
   eliminarResenaSincronizadaDB(id);
 };
 
 export const reportarResenaServicio = async (
   id: string,
-  motivo = 'Contenido ofensivo o inapropiado'
+  motivo = 'Contenido ofensivo o inapropiado',
+  token?: string
 ): Promise<Resena> => {
-  inicializarBaseDeDatos();
-  await esperarRedSimulada();
-
-  const sincronizadas = obtenerResenasSincronizadasDB();
-  const existente = sincronizadas.find((r) => r.id === id);
-
-  if (!existente) {
-    throw new Error('No se encontró la reseña a reportar.');
-  }
-
-  if (existente.reportada) {
-    throw new Error('Esta reseña ya fue reportada anteriormente.');
-  }
-
-  const actualizada: Resena = {
-    ...existente,
-    reportada: true,
-    motivoReporte: motivo.trim() || 'Contenido ofensivo o inapropiado',
-    fechaReporte: new Date().toISOString(),
-  };
-
-  return guardarResenaSincronizadaDB(actualizada);
+  void motivo; // El endpoint de reportes no acepta un motivo en el contrato actual.
+  const tokenValido = exigirSesion(token);
+  const reportada = await reportarResenaApi(id, tokenValido);
+  const anterior = obtenerResenasSincronizadasDB().find((r) => r.id === id);
+  return guardarResenaSincronizadaDB({
+    ...convertirResenaApi(reportada),
+    nombreUsuario: anterior?.nombreUsuario ?? 'Vecino',
+    fotos: anterior?.fotos ?? [],
+  });
 };
 
 export const responderResenaServicio = async (
   id: string,
-  comentarioRespuesta: string
+  comentarioRespuesta: string,
+  token?: string
 ): Promise<Resena> => {
   const textoLimpio = comentarioRespuesta.trim();
-  if (!textoLimpio) {
-    throw new Error('La respuesta del comercio no puede estar vacía.');
-  }
-
-  inicializarBaseDeDatos();
-  await esperarRedSimulada();
-
-  const sincronizadas = obtenerResenasSincronizadasDB();
-  const existente = sincronizadas.find((r) => r.id === id);
-
-  if (!existente) {
-    throw new Error('No se encontró la reseña para responder.');
-  }
-
-  if (existente.respuestaComercio) {
-    throw new Error('El comercio ya respondió a esta reseña (solo se permite una respuesta).');
-  }
-
-  const actualizada: Resena = {
-    ...existente,
-    respuestaComercio: {
-      comentario: textoLimpio,
-      fechaCreacion: new Date().toISOString(),
-    },
-  };
-
-  return guardarResenaSincronizadaDB(actualizada);
+  if (!textoLimpio) throw new Error('La respuesta del comercio no puede estar vacía.');
+  const tokenValido = exigirSesion(token);
+  const respondida = await responderResenaApi(id, textoLimpio, tokenValido);
+  const anterior = obtenerResenasSincronizadasDB().find((r) => r.id === id);
+  return guardarResenaSincronizadaDB({
+    ...convertirResenaApi(respondida),
+    nombreUsuario: anterior?.nombreUsuario ?? 'Vecino',
+    fotos: anterior?.fotos ?? [],
+  });
 };
 
-// Sin token de la API no podemos enviar la cola offline de forma segura.
-// Por eso, por ahora no marcamos ninguna reseña como sincronizada.
-
+/** Sólo sincroniza reseñas de la cuenta autenticada y sin fotos sin soporte API. */
+let sincronizando = false;
 export const sincronizarResenasPendientes = async (
-  comercioId?: string
+  comercioId?: string,
+  sesion?: SesionResenas
 ): Promise<{ sincronizadas: number; errores: number }> => {
   inicializarBaseDeDatos();
-
-  const pendientes = obtenerResenasLocales(comercioId);
-
-  if (pendientes.length > 0) {
-    console.log(
-      `Hay ${pendientes.length} reseñas pendientes de enviar a la API.`
-    );
+  if (!sesion?.token || !sesion.usuarioId || sincronizando) {
+    return { sincronizadas: 0, errores: 0 };
   }
-
-  // No marcamos ninguna reseña como sincronizada
-  // hasta que la API confirme que fue recibida.
-  return {
-    sincronizadas: 0,
-    errores: 0,
-  };
+  sincronizando = true;
+  let sincronizadas = 0;
+  let errores = 0;
+  try {
+    const pendientes = obtenerResenasLocales(comercioId).filter(
+      (r) => r.usuarioId === sesion.usuarioId && !r.fotos?.length
+    );
+    for (const pendiente of pendientes) {
+      try {
+        const creada = await crearResenaApi(pendiente.comercioId, {
+          estrellas: pendiente.calificacion,
+          comentario: pendiente.comentario ?? '',
+        }, sesion.token);
+        // Primero guardar la respuesta del servidor. Sólo entonces retirar de la cola.
+        guardarResenaSincronizadaDB({
+          ...convertirResenaApi(creada),
+          nombreUsuario: pendiente.nombreUsuario,
+        });
+        eliminarResenaPendientePorClientId(pendiente.id);
+        sincronizadas++;
+      } catch (error) {
+        console.warn('No se pudo sincronizar la reseña pendiente:', error);
+        errores++;
+      }
+    }
+    return { sincronizadas, errores };
+  } finally {
+    sincronizando = false;
+  }
 };
-
-
-
-
-
-
-
-
-
-
-
 
 const NOMBRES_COMERCIOS_CONOCIDOS: Record<string, string> = {
   '1': 'Café La Esquina',

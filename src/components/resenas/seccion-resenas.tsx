@@ -1,6 +1,6 @@
 import * as Network from 'expo-network';
-import React, { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, Alert, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 
 import { useAutenticacion } from '@/contextos/autenticacion';
 import { useTheme } from '@/hooks/use-theme';
@@ -15,6 +15,8 @@ import {
   responderResenaServicio,
   sincronizarResenasPendientes
 } from '../../servicios/resenas';
+import { borrarAccionesDemoLocales, guardarReporteDemoLocal, guardarRespuestaDemoLocal } from '../../servicios/respuestas-demo';
+import { ingresarApiResenas, type SesionPruebaResenas } from '../../servicios/sesion-prueba-resenas';
 import { Resena } from '../../tipos/resena';
 import { GaleriaComercio } from './galeria-comercio';
 import { ModalNuevaResena } from './modal-nueva-resena';
@@ -24,6 +26,9 @@ import { VideoPresentacion } from './video-presentacion';
 
 interface Props {
   comercioId: string;
+  /** El Rol 1 puede proporcionar el token al integrar los módulos. */
+  tokenSesion?: string;
+  nombreComercio?: string;
 }
 
 type ModoPruebaRol = 'vecino' | 'comercio';
@@ -32,34 +37,58 @@ function tieneConexionActiva(red: Network.NetworkState): boolean {
   return Boolean(red.isConnected && red.isInternetReachable !== false);
 }
 
-export const SeccionResenas: React.FC<Props> = ({ comercioId }) => {
+export const SeccionResenas: React.FC<Props> = ({ comercioId, tokenSesion, nombreComercio }) => {
   const theme = useTheme();
-  const { usuario } = useAutenticacion();
 
+  const nombreVisibleComercio = nombreComercio ?? 'Comercio';
+
+  const { usuario } = useAutenticacion();
   const [modalVisible, setModalVisible] = useState(false);
   const [resenaEditando, setResenaEditando] = useState<Resena | null>(null);
   const [guardando, setGuardando] = useState(false);
+  const [sinInternet, setSinInternet] = useState(false);
+  const huboDesconexion = useRef(false);
 
   const [resenas, setResenas] = useState<Resena[]>([]);
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [estadisticas, setEstadisticas] = useState({ promedio: 0, total: 0 });
 
-  // Selector de demostración para probar el Rol 4
+  // Acceso independiente para probar operaciones REALES sin integrar el Rol 1.
   const [rolDemo, setRolDemo] = useState<ModoPruebaRol>('vecino');
+  const [sesionPrueba, setSesionPrueba] = useState<SesionPruebaResenas | null>(null);
+  const [correoPrueba, setCorreoPrueba] = useState('');
+  const [clavePrueba, setClavePrueba] = useState('');
+  const [ingresando, setIngresando] = useState(false);
 
-  // Se permite el modo de prueba si no hay sesión o si
-  // la cuenta es comercio pero todavía no tiene comercioId.
-  const puedeUsarModoDemo =
-    !usuario ||
-    (usuario.rol === 'comercio' && !usuario.comercioId);
-  const usuarioActivoId = usuario ? usuario.id : 'usr-yo';
-  const nombreUsuarioActivo = usuario ? usuario.nombre : 'Thiago Chamorro';
-  const esDueñoDelComercio =
-    usuario?.rol === 'comercio' && usuario.comercioId
-      ? usuario.comercioId === comercioId ||
-        (comercioId === '1' && Boolean(usuario.comercioId))
-      : puedeUsarModoDemo && rolDemo === 'comercio';
+  const tokenActual = tokenSesion ?? sesionPrueba?.token;
+  const usuarioActual = sesionPrueba?.usuario ?? usuario;
+  const usuarioActivoId = usuarioActual?.id ?? 'demo-local';
+  const nombreUsuarioActivo = usuarioActual?.nombre ?? 'Usuario de demostración';
+  const puedeUsarModoDemo = !tokenActual;
+  const incluirRespuestasDemo = !tokenActual;
+  const esDueñoDelComercio = tokenActual
+    ? usuarioActual?.rol === 'comercio' && usuarioActual.comercioId === comercioId
+    : rolDemo === 'comercio';
+
+  const iniciarSesionPrueba = async () => {
+    if (ingresando) return;
+    setIngresando(true);
+    try {
+      const sesion = await ingresarApiResenas(correoPrueba, clavePrueba);
+      setSesionPrueba(sesion);
+      setClavePrueba('');
+      setRolDemo(sesion.usuario.rol === 'comercio' ? 'comercio' : 'vecino');
+      Alert.alert(
+        'Sesión de API iniciada',
+        `${sesion.usuario.nombre} · ${sesion.usuario.rol}. Las acciones ahora usarán Docker.`
+      );
+    } catch (error) {
+      Alert.alert('No se pudo iniciar sesión', error instanceof Error ? error.message : 'Error desconocido.');
+    } finally {
+      setIngresando(false);
+    }
+  };
   const cargarResenas = useCallback(
     async (mostrarIndicador = true) => {
       try {
@@ -71,7 +100,7 @@ export const SeccionResenas: React.FC<Props> = ({ comercioId }) => {
         try {
           const estadoRed = await Network.getNetworkStateAsync();
           if (tieneConexionActiva(estadoRed)) {
-            const resultadoSync = await sincronizarResenasPendientes(comercioId);
+            const resultadoSync = await sincronizarResenasPendientes(comercioId, tokenActual ? { token: tokenActual, usuarioId: usuarioActivoId } : undefined);
             if (resultadoSync.sincronizadas > 0) {
               Alert.alert(
                 'Sincronización completa',
@@ -88,7 +117,7 @@ export const SeccionResenas: React.FC<Props> = ({ comercioId }) => {
         }
 
         // 2. Cargamos el listado actualizado desde el servicio (persistido en SQLite)
-        const data = await obtenerResenasPorComercio(comercioId);
+        const data = await obtenerResenasPorComercio(comercioId, incluirRespuestasDemo);
         setResenas(data);
         setEstadisticas(calcularEstadisticasResenas(data));
       } catch {
@@ -97,7 +126,7 @@ export const SeccionResenas: React.FC<Props> = ({ comercioId }) => {
         setCargando(false);
       }
     },
-    [comercioId]
+    [comercioId, tokenActual, usuarioActivoId, incluirRespuestasDemo]
   );
 
   useEffect(() => {
@@ -118,29 +147,58 @@ export const SeccionResenas: React.FC<Props> = ({ comercioId }) => {
     };
   }, [cargarResenas]);
 
-  // Escucha automáticamente cuando el teléfono recupera la conexión a Internet
+  // Refleja el estado de Internet y mantiene visible la cola local cuando vuelve la conexión.
   useEffect(() => {
+    let activo = true;
+    const actualizarEstadoRed = (red: Network.NetworkState) => {
+      if (!activo) return;
+      const conectado = tieneConexionActiva(red);
+      setSinInternet(!conectado);
+      if (!conectado) {
+        huboDesconexion.current = true;
+      } else if (huboDesconexion.current) {
+        huboDesconexion.current = false;
+        // Recuperar Internet no significa que Docker haya recibido las reseñas.
+        Alert.alert(
+          'Conexión recuperada',
+          'Tus reseñas guardadas sin Internet siguen en el dispositivo. Todavía están pendientes de publicación hasta que se autentiquen y se envíen a la API.'
+        );
+        void cargarResenas(false);
+      }
+    };
+
+    void Network.getNetworkStateAsync()
+      .then(actualizarEstadoRed)
+      .catch((error) => console.warn('No se pudo consultar el estado de red:', error));
+
     const suscripcion = Network.addNetworkStateListener((estadoRed) => {
+      actualizarEstadoRed(estadoRed);
       if (tieneConexionActiva(estadoRed)) {
         void (async () => {
-          const resultado = await sincronizarResenasPendientes(comercioId);
-          if (resultado.sincronizadas > 0) {
-            const data = await obtenerResenasPorComercio(comercioId);
-            setResenas(data);
-            setEstadisticas(calcularEstadisticasResenas(data));
-            Alert.alert(
-              'Sincronización completa',
-              'Tus reseñas guardadas sin conexión se han sincronizado.'
+          try {
+            const resultado = await sincronizarResenasPendientes(
+              comercioId,
+              tokenActual ? { token: tokenActual, usuarioId: usuarioActivoId } : undefined
             );
+            if (resultado.sincronizadas > 0) {
+              await cargarResenas(false);
+              Alert.alert(
+                'Sincronización completa',
+                'Tus reseñas guardadas sin conexión se han sincronizado con el servidor.'
+              );
+            }
+          } catch (error) {
+            console.warn('No se pudo sincronizar al recuperar Internet:', error);
           }
         })();
       }
     });
 
     return () => {
+      activo = false;
       suscripcion.remove();
     };
-  }, [comercioId]);
+  }, [comercioId, tokenActual, usuarioActivoId, cargarResenas]);
 
   const abrirParaNueva = () => {
     setResenaEditando(null);
@@ -161,11 +219,11 @@ export const SeccionResenas: React.FC<Props> = ({ comercioId }) => {
         onPress: () => {
           void (async () => {
             try {
-              await eliminarResenaServicio(id, usuarioActivoId);
-              const actualizadas = await obtenerResenasPorComercio(comercioId);
+              await eliminarResenaServicio(id, usuarioActivoId, tokenActual);
+              const actualizadas = await obtenerResenasPorComercio(comercioId, incluirRespuestasDemo);
               setResenas(actualizadas);
               setEstadisticas(calcularEstadisticasResenas(actualizadas));
-              Alert.alert('Reseña eliminada', 'Tu reseña se eliminó correctamente.');
+              Alert.alert('Reseña eliminada', 'La reseña se eliminó correctamente.');
             } catch (err) {
               const mensaje =
                 err instanceof Error ? err.message : 'No se pudo eliminar la reseña.';
@@ -189,8 +247,21 @@ export const SeccionResenas: React.FC<Props> = ({ comercioId }) => {
           onPress: () => {
             void (async () => {
               try {
-                await reportarResenaServicio(id, 'Contenido ofensivo o inapropiado');
-                const actualizadas = await obtenerResenasPorComercio(comercioId);
+                if (incluirRespuestasDemo && rolDemo === 'vecino') {
+                  const resena = resenas.find((item) => item.id === id);
+                  if (!resena || resena.reportada || resena.usuarioId === usuarioActivoId) {
+                    throw new Error('No podés reportar esta reseña en el modo de prueba.');
+                  }
+                  guardarReporteDemoLocal(comercioId, id);
+                  setResenas((actuales) => actuales.map((item) =>
+                    item.id === id ? { ...item, reportada: true, reporteDemoLocal: true } : item
+                  ));
+                  Alert.alert('Reporte de prueba guardado',
+                    'El reporte se guardó solo en este dispositivo. No se envió a Docker.');
+                  return;
+                }
+                await reportarResenaServicio(id, 'Contenido ofensivo o inapropiado', tokenActual);
+                const actualizadas = await obtenerResenasPorComercio(comercioId, incluirRespuestasDemo);
                 setResenas(actualizadas);
                 Alert.alert(
                   'Reporte registrado',
@@ -208,19 +279,31 @@ export const SeccionResenas: React.FC<Props> = ({ comercioId }) => {
     );
   };
 
-  const responderResena = (id: string, respuesta: string) => {
-    void (async () => {
-      try {
-        await responderResenaServicio(id, respuesta);
-        const actualizadas = await obtenerResenasPorComercio(comercioId);
-        setResenas(actualizadas);
-        Alert.alert('Respuesta publicada', 'Tu respuesta única como comercio fue registrada.');
-      } catch (err) {
-        const mensaje =
-          err instanceof Error ? err.message : 'No se pudo publicar la respuesta.';
-        Alert.alert('Error', mensaje);
+  const responderResena = async (id: string, respuesta: string): Promise<void> => {
+    if (incluirRespuestasDemo && rolDemo === 'comercio') {
+      const resenaActual = resenas.find((item) => item.id === id);
+      if (!resenaActual || resenaActual.respuestaComercio) {
+        throw new Error('Esta reseña no está disponible para responder.');
       }
-    })();
+      const respuestaLocal = guardarRespuestaDemoLocal(comercioId, id, respuesta);
+      setResenas((actuales) => actuales.map((item) =>
+        item.id === id
+          ? { ...item, respuestaComercio: respuestaLocal, respuestaDemoLocal: true }
+          : item
+      ));
+      Alert.alert(
+        'Respuesta de prueba guardada',
+        'La respuesta se guardó solo en este dispositivo. No se publicó en Docker.'
+      );
+      return;
+    }
+
+    // Fuera del modo demo, la API debe confirmar la respuesta con un token real.
+    await responderResenaServicio(id, respuesta, tokenActual);
+    const actualizadas = await obtenerResenasPorComercio(comercioId, incluirRespuestasDemo);
+    setResenas(actualizadas);
+    setEstadisticas(calcularEstadisticasResenas(actualizadas));
+    Alert.alert('Respuesta publicada', 'La respuesta fue confirmada por el servidor.');
   };
 
   const handlePublicar = async (calificacion: number, comentario: string, fotos: string[]) => {
@@ -228,6 +311,8 @@ export const SeccionResenas: React.FC<Props> = ({ comercioId }) => {
       setGuardando(true);
       const red = await Network.getNetworkStateAsync();
       const online = tieneConexionActiva(red);
+      setSinInternet(!online);
+      if (!online) huboDesconexion.current = true;
 
       if (resenaEditando) {
         await editarResena(
@@ -238,13 +323,21 @@ export const SeccionResenas: React.FC<Props> = ({ comercioId }) => {
             comentario,
             fotos,
           },
-          online
+          online,
+          tokenActual
         );
-        const actualizadas = await obtenerResenasPorComercio(comercioId);
+        const actualizadas = await obtenerResenasPorComercio(comercioId, incluirRespuestasDemo);
         setResenas(actualizadas);
         setEstadisticas(calcularEstadisticasResenas(actualizadas));
-        Alert.alert('Reseña actualizada', 'Tu reseña se actualizó correctamente.');
-      } else if (online) {
+        Alert.alert(
+          resenaEditando.pendienteSincronizacion ? 'Reseña local actualizada' : 'Reseña actualizada',
+          resenaEditando.pendienteSincronizacion
+            ? online
+              ? 'Los cambios quedaron guardados en SQLite y siguen pendientes de publicación.'
+              : 'Sin Internet: los cambios se guardaron en SQLite y estarán disponibles al recuperar la conexión.'
+            : 'Los cambios fueron confirmados por el servidor.'
+        );
+      } else if (online && tokenActual && fotos.length === 0) {
         await crearResena({
           comercioId,
           usuarioId: usuarioActivoId,
@@ -252,12 +345,12 @@ export const SeccionResenas: React.FC<Props> = ({ comercioId }) => {
           calificacion,
           comentario,
           fotos,
-        });
-        const actualizadas = await obtenerResenasPorComercio(comercioId);
+        }, tokenActual);
+        const actualizadas = await obtenerResenasPorComercio(comercioId, incluirRespuestasDemo);
         setResenas(actualizadas);
         setEstadisticas(calcularEstadisticasResenas(actualizadas));
-        Alert.alert('Reseña guardada',
-        'Tu reseña se guardó en el dispositivo y está pendiente de enviarse al servidor.');
+        Alert.alert('Reseña publicada',
+          'La reseña fue confirmada por el servidor.');
       } else {
         await crearResenaOffline({
           comercioId,
@@ -267,13 +360,27 @@ export const SeccionResenas: React.FC<Props> = ({ comercioId }) => {
           comentario,
           fotos,
         });
-        const actualizadas = await obtenerResenasPorComercio(comercioId);
+        const actualizadas = await obtenerResenasPorComercio(comercioId, incluirRespuestasDemo);
         setResenas(actualizadas);
         setEstadisticas(calcularEstadisticasResenas(actualizadas));
+
         Alert.alert(
-          'Modo sin conexión',
-          'Tu reseña se guardó localmente en SQLite. Quedará pendiente hasta que esté habilitada la sincronización con el servidor.'
+          !online
+            ? 'Reseña guardada sin Internet'
+            : fotos.length > 0
+              ? 'Reseña con fotografía guardada'
+              : 'Reseña de demostración guardada',
+
+          !online
+            ? 'La reseña se guardó en SQLite porque no hay conexión. Todavía no se publicó en Docker.'
+            : fotos.length > 0
+              ? 'La reseña y su fotografía se guardaron localmente. La API actual no permite asociar fotografías a las reseñas, por lo que no se publicó en Docker.'
+              : 'La reseña se guardó en SQLite porque no hay una sesión de API disponible. Todavía no se publicó en Docker.'
         );
+
+
+
+
       }
 
       setModalVisible(false);
@@ -292,11 +399,112 @@ export const SeccionResenas: React.FC<Props> = ({ comercioId }) => {
 
   return (
     <View style={styles.contenedor}>
-      {/* Video de presentación asociado al comercio */}
-      <VideoPresentacion comercioId={comercioId} nombreComercio="Café La Esquina" />
+      {!tokenSesion && (
+        <View style={[styles.barraDemo, { backgroundColor: theme.backgroundElement, borderColor: theme.border }]}>
+          <Text style={[styles.textoDemo, { color: theme.text }]}>Conexión real con la API · Rol 4</Text>
+          {sesionPrueba ? (
+            <View style={styles.filaSesion}>
+              <Text style={[styles.textoDemo, { color: theme.text }]}>
+                Sesión activa: {sesionPrueba.usuario.nombre} ({sesionPrueba.usuario.rol})
+              </Text>
+              <TouchableOpacity
+                onPress={() => { setSesionPrueba(null); setRolDemo('vecino'); }}
+                style={[styles.chipDemo, { backgroundColor: theme.backgroundSelected }]}>
+                <Text style={{ color: theme.text }}>Cerrar sesión de prueba</Text>
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <View style={styles.filaSesion}>
+              <Text style={[styles.textoDemo, { color: theme.textSecondaryStrong }]}>
+                Iniciá sesión con una cuenta de la API para publicar o responder en Docker.
+                Sin iniciar sesión, podés seguir usando el modo demo local.
+              </Text>
+              <TextInput
+                accessibilityLabel="Correo de la API"
+                style={[styles.campoSesion, { borderColor: theme.border, color: theme.text }]}
+                value={correoPrueba}
+                onChangeText={setCorreoPrueba}
+                autoCapitalize="none"
+                keyboardType="email-address"
+                autoCorrect={false}
+                placeholder="Correo de prueba de la API"
+                placeholderTextColor={theme.textSecondary}
+              />
+              <TextInput
+                accessibilityLabel="Contraseña de la API"
+                style={[styles.campoSesion, { borderColor: theme.border, color: theme.text }]}
+                value={clavePrueba}
+                onChangeText={setClavePrueba}
+                secureTextEntry
+                placeholder="Contraseña"
+                placeholderTextColor={theme.textSecondary}
+              />
+              <TouchableOpacity
+                disabled={ingresando}
+                onPress={() => void iniciarSesionPrueba()}
+                style={[styles.chipDemo, { backgroundColor: theme.forest }]}>
+                <Text style={[styles.textoDemo, { color: theme.onForest }]}>
+                  {ingresando ? 'Ingresando...' : 'Iniciar sesión con Docker'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          )}
+        </View>
+      )}
+      {sinInternet && (
+        <View
+          style={[
+            styles.avisoPendientes,
+            { backgroundColor: theme.errorBackground, borderColor: theme.border },
+          ]}>
+          <Text style={[styles.textoAvisoPendientes, { color: theme.error }]}>
+            Sin conexión a Internet · Modo offline. Las reseñas se guardan en SQLite y quedan pendientes de publicación.
+          </Text>
+        </View>
+      )}
 
-      {/* Galería de Fotografías de la ficha del comercio */}
-      <GaleriaComercio comercioId={comercioId} nombreComercio="Café La Esquina" />
+
+
+<View style={{ marginBottom: 24 }}>
+  <Text
+    style={{
+      color: theme.text,
+      fontSize: 26,
+      fontWeight: 'bold',
+    }}>
+    {nombreVisibleComercio}
+  </Text>
+
+  <Text
+    style={{
+      color: theme.textSecondary,
+      fontSize: 14,
+      marginTop: 4,
+    }}>
+    Fotografías, video y opiniones del comercio
+  </Text>
+</View>
+
+
+
+
+
+      {/* Fotografías oficiales del comercio */}
+<GaleriaComercio
+  comercioId={comercioId}
+  nombreComercio={nombreVisibleComercio}
+  tokenSesion={tokenActual}
+  puedeEditar={Boolean(tokenActual) && esDueñoDelComercio}
+/>
+
+{/* Video de presentación del comercio */}
+<VideoPresentacion
+  comercioId={comercioId}
+  nombreComercio={nombreVisibleComercio}
+/>
+
+
+
 
       {/* Selector de demostración exclusivo para pruebas independientes cuando no hay sesión iniciada */}
       {puedeUsarModoDemo && (
@@ -323,7 +531,7 @@ export const SeccionResenas: React.FC<Props> = ({ comercioId }) => {
                   styles.textoChipDemo,
                   { color: rolDemo === 'vecino' ? theme.onForest : theme.text },
                 ]}>
-                Vecino (Thiago)
+                Vecino (demo local)
               </Text>
             </TouchableOpacity>
             <TouchableOpacity
@@ -344,6 +552,30 @@ export const SeccionResenas: React.FC<Props> = ({ comercioId }) => {
               </Text>
             </TouchableOpacity>
           </View>
+          {incluirRespuestasDemo && (
+            <TouchableOpacity
+              onPress={() => Alert.alert(
+                'Reiniciar acciones de prueba',
+                'Borrará las respuestas y reportes de demostración. No elimina tus reseñas locales ni cambia Docker.',
+                [
+                  { text: 'Cancelar', style: 'cancel' },
+                  {
+                    text: 'Reiniciar pruebas',
+                    style: 'destructive',
+                    onPress: () => {
+                      try {
+                        borrarAccionesDemoLocales(comercioId);
+                        void cargarResenas(false);
+                      } catch (error) {
+                        Alert.alert('Error', error instanceof Error ? error.message : 'No se pudieron reiniciar las pruebas.');
+                      }
+                    },
+                  },
+                ]
+              )}>
+              <Text style={[styles.linkSincronizar, { color: theme.actionText }]}>Reiniciar acciones demo</Text>
+            </TouchableOpacity>
+          )}
         </View>
       )}
 
@@ -355,14 +587,16 @@ export const SeccionResenas: React.FC<Props> = ({ comercioId }) => {
           ]}>
           <Text style={[styles.textoAvisoPendientes, { color: theme.promotion }]}>
             Tenés {pendientesCount}{' '}
-            {pendientesCount === 1 ? 'reseña guardada' : 'reseñas guardadas'} sin conexión en
-            SQLite.
+            {pendientesCount === 1 ? 'reseña guardada localmente' : 'reseñas guardadas localmente'} en
+            SQLite (modo demostración).
           </Text>
-          <TouchableOpacity onPress={() => void cargarResenas(false)}>
-            <Text style={[styles.linkSincronizar, { color: theme.actionText }]}>
-              Sincronizar ahora
-            </Text>
-          </TouchableOpacity>
+          {tokenActual ? (
+            <TouchableOpacity onPress={() => void cargarResenas(false)}>
+              <Text style={[styles.linkSincronizar, { color: theme.actionText }]}>Sincronizar ahora</Text>
+            </TouchableOpacity>
+          ) : (
+            <Text style={[styles.linkSincronizar, { color: theme.actionText }]}>Pendiente de publicación</Text>
+          )}
         </View>
       )}
 
@@ -436,6 +670,8 @@ export const SeccionResenas: React.FC<Props> = ({ comercioId }) => {
 
 const styles = StyleSheet.create({
   contenedor: { marginTop: 24 },
+  filaSesion: { width: '100%', gap: 9 },
+  campoSesion: { width: '100%', borderWidth: 1, borderRadius: 10, minHeight: 44, paddingHorizontal: 12 },
   barraDemo: {
     flexDirection: 'row',
     flexWrap: 'wrap',

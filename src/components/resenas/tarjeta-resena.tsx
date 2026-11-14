@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Image, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { Alert, Image, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 
 import { useTheme } from '@/hooks/use-theme';
 import { Resena } from '../../tipos/resena';
@@ -11,13 +11,13 @@ interface Props {
   onEditar?: (resena: Resena) => void;
   onEliminar?: (id: string) => void;
   onReportar?: (id: string) => void;
-  onResponder?: (id: string, respuesta: string) => void;
+  onResponder?: (id: string, respuesta: string) => Promise<void>;
 }
 
 const TarjetaResena: React.FC<Props> = ({
   resena,
   esComercio = false,
-  usuarioActivoId = 'usr-yo',
+  usuarioActivoId,
   onEditar,
   onEliminar,
   onReportar,
@@ -27,9 +27,12 @@ const TarjetaResena: React.FC<Props> = ({
   const [menuVisible, setMenuVisible] = useState(false);
   const [respondiendo, setRespondiendo] = useState(false);
   const [textoRespuesta, setTextoRespuesta] = useState('');
+  const [enviandoRespuesta, setEnviandoRespuesta] = useState(false);
 
   // Evalúa si la reseña pertenece al usuario activo actual
-  const esMia = resena.usuarioId === usuarioActivoId;
+  const esMia =
+    Boolean(usuarioActivoId) &&
+    resena.usuarioId === usuarioActivoId;
   const calificacionSegura = Math.max(0, Math.min(5, resena.calificacion || 0));
   const puedeResponderComercio = esComercio && !resena.respuestaComercio;
 
@@ -38,11 +41,17 @@ const TarjetaResena: React.FC<Props> = ({
     accion();
   };
 
-  const enviarRespuesta = () => {
-    if (textoRespuesta.trim() && onResponder) {
-      onResponder(resena.id, textoRespuesta.trim());
+  const enviarRespuesta = async () => {
+    if (!textoRespuesta.trim() || !onResponder || enviandoRespuesta) return;
+    setEnviandoRespuesta(true);
+    try {
+      await onResponder(resena.id, textoRespuesta.trim());
       setRespondiendo(false);
       setTextoRespuesta('');
+    } catch (error) {
+      Alert.alert('No se pudo guardar la respuesta', error instanceof Error ? error.message : 'Ocurrió un error.');
+    } finally {
+      setEnviandoRespuesta(false);
     }
   };
 
@@ -62,7 +71,7 @@ const TarjetaResena: React.FC<Props> = ({
                 { backgroundColor: theme.promotionBackground },
               ]}>
               <Text style={[styles.textoEtiquetaEstado, { color: theme.promotion }]}>
-                Pendiente de sincronizar
+                Guardada localmente · Demo
               </Text>
             </View>
           )}
@@ -73,7 +82,7 @@ const TarjetaResena: React.FC<Props> = ({
                 { backgroundColor: theme.errorBackground },
               ]}>
               <Text style={[styles.textoEtiquetaEstado, { color: theme.error }]}>
-                Reportada
+                {resena.reporteDemoLocal ? 'Reportada · demostración' : 'Reportada'}
               </Text>
             </View>
           )}
@@ -174,7 +183,9 @@ const TarjetaResena: React.FC<Props> = ({
           ]}>
           <View style={styles.respuestaEncabezado}>
             <Text style={[styles.respuestaTitulo, { color: theme.primary }]}>
-              Respuesta del comercio
+              {resena.respuestaDemoLocal
+                ? 'Respuesta de demostración · Solo en este dispositivo'
+                : 'Respuesta del comercio'}
             </Text>
             {resena.respuestaComercio.fechaCreacion && (
               <Text style={[styles.respuestaFecha, { color: theme.textSecondary }]}>
@@ -218,9 +229,10 @@ const TarjetaResena: React.FC<Props> = ({
             </TouchableOpacity>
             <TouchableOpacity
               style={[styles.botonAccionRespuesta, { backgroundColor: theme.forest }]}
-              onPress={enviarRespuesta}>
+              onPress={() => void enviarRespuesta()}
+              disabled={enviandoRespuesta}>
               <Text style={[styles.textoBotonRespuesta, { color: theme.onForest }]}>
-                Enviar respuesta
+                {enviandoRespuesta ? 'Enviando...' : 'Enviar respuesta'}
               </Text>
             </TouchableOpacity>
           </View>

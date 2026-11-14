@@ -1,5 +1,5 @@
 import * as ImagePicker from 'expo-image-picker';
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import {
   Alert,
   Image,
@@ -8,7 +8,7 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
-  View,
+  View
 } from 'react-native';
 
 import { useTheme } from '@/hooks/use-theme';
@@ -36,8 +36,10 @@ export const ModalNuevaResena: React.FC<Props> = ({
   const [fotos, setFotos] = useState<string[]>([]);
   const [errorValidacion, setErrorValidacion] = useState<string | null>(null);
 
-  useEffect(() => {
+
+  const prepararFormulario = () => {
     setErrorValidacion(null);
+
     if (resenaInicial) {
       setCalificacion(resenaInicial.calificacion);
       setComentario(resenaInicial.comentario || '');
@@ -47,7 +49,8 @@ export const ModalNuevaResena: React.FC<Props> = ({
       setComentario('');
       setFotos([]);
     }
-  }, [resenaInicial, visible]);
+  };
+
 
   const seleccionarImagen = async () => {
     try {
@@ -94,7 +97,12 @@ export const ModalNuevaResena: React.FC<Props> = ({
   };
 
   return (
-    <Modal visible={visible} animationType="slide" transparent>
+    <Modal
+      visible={visible}
+      animationType="slide"
+      transparent
+      onShow={prepararFormulario}
+    >
       <View style={[styles.fondoModal, { backgroundColor: theme.overlay }]}>
         <View
           style={[
